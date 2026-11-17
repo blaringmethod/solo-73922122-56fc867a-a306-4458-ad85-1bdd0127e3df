@@ -233,9 +233,12 @@ class IndexBuildService:
         不重跑任何 CREATE INDEX；无效索引不会被报成成功。
         """
         # 仅在轮次表缺失时才执行 DDL（避免在存在未提交写事务时因 DDL 锁阻塞对账）。
+        # 差分隐私台账/预算表一并检查，老数据目录（initdb 不重放）也能幂等补齐。
         with db.pool().connection() as conn:
             exists = conn.execute(
-                "SELECT to_regclass('public.index_build_rounds') IS NOT NULL AS ok"
+                "SELECT to_regclass('public.index_build_rounds') IS NOT NULL "
+                "   AND to_regclass('public.dp_summary_ledger') IS NOT NULL "
+                "   AND to_regclass('public.dp_summary_budget') IS NOT NULL AS ok"
             ).fetchone()["ok"]
         if not exists:
             db.ensure_schema()

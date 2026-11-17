@@ -51,4 +51,36 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_index_rounds_one_active
     ON index_build_rounds ((1))
     WHERE status IN ('running', 'cancel_requested');
 
+-- 3) 差分隐私日汇总：结果台账（幂等键 + 已发布加噪结果固化）
+--    同一 (lab_no, day_utc, request_id) 只落一行：重试原样返回，不重复扣预算。
+CREATE TABLE IF NOT EXISTS dp_summary_ledger (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    lab_no      TEXT NOT NULL,                  -- 查询范围：实验室号
+    day_utc     DATE NOT NULL,                  -- 查询范围：reports.created_at 的 UTC 日期
+    request_id  TEXT NOT NULL,                  -- 调用方请求号（幂等键）
+    epsilon     DOUBLE PRECISION NOT NULL,      -- 本次查询消耗的 ε
+    noisy_sum   DOUBLE PRECISION NOT NULL,      -- 已发布的加噪合计（重试原样返回）
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (lab_no, day_utc, request_id)
+);
+
+COMMENT ON TABLE  dp_summary_ledger             IS '差分隐私日汇总台账：同范围同请求号返回原加噪值';
+COMMENT ON COLUMN dp_summary_ledger.day_utc     IS 'reports.created_at 按 UTC 截取的日期';
+COMMENT ON COLUMN dp_summary_ledger.request_id  IS '调用方请求号（幂等键）';
+COMMENT ON COLUMN dp_summary_ledger.noisy_sum   IS '已发布的加噪合计；真实合计与行数不落库、不出接口';
+
+-- 4) 差分隐私预算表：每个 (实验室, UTC 日期) 总预算 ε=1，单次查询 ε=0.5，
+--    即最多 2 次成功查询（不同请求号）。CHECK 为数据库层兜底；
+--    应用层用条件 upsert（spent_queries < 2 才 +1）在并发下也不会超限。
+CREATE TABLE IF NOT EXISTS dp_summary_budget (
+    lab_no        TEXT NOT NULL,
+    day_utc       DATE NOT NULL,
+    spent_queries INTEGER NOT NULL DEFAULT 0
+                  CHECK (spent_queries >= 0 AND spent_queries <= 2),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (lab_no, day_utc)
+);
+
+COMMENT ON TABLE dp_summary_budget IS '差分隐私预算：每 (实验室, UTC日期) ε=1，每次成功查询扣 0.5';
+
 COMMIT;
